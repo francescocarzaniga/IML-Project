@@ -14,6 +14,15 @@ class Tree(object):
         self.feature = feature
         self.threshold = threshold
         self.direction = direction
+        self.depth = self.compute_depth()
+
+    def compute_depth(self):
+        depth = 0
+        node = self
+        while node.parent is not None:
+            node = node.parent
+            depth += 1
+        return depth
 
     def add_child(self, child):
         self.children.append(child)
@@ -33,7 +42,7 @@ class Tree(object):
     def get_all_features(self):
         node = self
         features_list = []
-        while node.parent is not None:
+        while node is not None:
             features_list.append(int(node.get_feature()))
             node = node.parent
         return np.asarray(features_list)
@@ -67,6 +76,9 @@ class Tree(object):
     def get_max_depth(self):
         return self.__max_depth(self)
 
+    def get_depth(self):
+        return self.depth
+
 
 class Leaf(object):
     def __init__(self, parent=None, decision=None, direction=None):
@@ -94,11 +106,10 @@ class Leaf(object):
 
 
 class DecisionTree(object):
-    def __init__(self, max_depth=None, max_features=None, bootstrap=False):
+    def __init__(self, max_depth=None, max_features=None):
         self.max_depth = max_depth
         self.max_features = max_features
-        self.tree = Tree()
-        self.bootstrap = bootstrap
+        self.tree = None
         self._queue = []
 
     @staticmethod
@@ -116,33 +127,47 @@ class DecisionTree(object):
         return entropy_node-entropy_child
 
     def __split(self, X, y, node, direction=None):
-        if node.parent is not None and node not in node.parent.children:
-            return
+        classes = np.unique(y)
+        # Base case 1, labels are all the same so create leaf where decision is label
+        if classes.size == 1:
+            leaf = Leaf(parent=node, decision=classes[0], direction=direction)
+            node.add_child(leaf)
+            return 1
+        # Base case 2, no labels associated to this class so create failure decision (should never happen)
+        elif classes.size == 0:
+            leaf = Leaf(parent=node, decision='failure', direction=direction)
+            node.add_child(leaf)
+            return 2
+        # Max depth parameter must be respected
+        if self.max_depth is not None and node.get_max_depth() == self.max_depth - 1:
+            leaf = Leaf(parent=node, decision=int(np.mean(y).round()), direction=direction)
+            node.add_child(leaf)
+            return 4
+        # Choose remaining features to be tested
+        if node is not None:
+            excluded_features = node.get_all_features()
+            features = np.delete(np.arange(X.shape[1]), excluded_features)
+        else:
+            features = np.arange(X.shape[1])
+        # Max_features must be respected
         max_features = self.max_features
-        excluded_features = node.get_all_features()
-        features = np.delete(np.arange(X.shape[1]), excluded_features)
-        if features.size > max_features:
+        if max_features is not None and features.size > max_features:
             random_features = np.random.choice(features, max_features, replace=False)
         else:
             random_features = features
+        # Try all the chosen features
         max_gain = 0.
         max_feature = -1
         best_threshold = None
-        y_features = np.unique(y)
-        if y_features.size == 1:
-            leaf = Leaf(parent=node, decision=y_features[0], direction=direction)
-            node.add_child(leaf)
-            return
-        if self.max_depth is not None and self.tree.get_max_depth() >= self.max_depth:
-            leaf = Leaf(parent=node, decision=round(float(np.mean(y))), direction=direction)
-            node.add_child(leaf)
-            return
         for feature in random_features:
             feature_vector = X[:, feature]
             try:
                 feature_vector = np.array(feature_vector, dtype=np.float64)
             except ValueError:
                 feature_vector = np.array(feature_vector, dtype=object)
+            # Substitute nan with most frequent value
+            counts, unique = np.unique(feature_vector, return_counts=True)
+            feature_vector[np.isnan(feature_vector)] = unique[np.argmax(counts)]
             unique = np.unique(feature_vector)
             if feature_vector.dtype == 'object':
                 subsets = [np.where(feature_vector == u)[0] for u in unique]
@@ -160,48 +185,67 @@ class DecisionTree(object):
                 max_gain = gain
                 max_feature = feature
                 best_threshold = threshold
+        # Base case 3
         if max_gain == 0.:
-            new_node = Leaf(parent=node.parent, decision=round(float(np.mean(y))), direction=node.get_direction())
+            new_node = Leaf(parent=node.parent, decision=int(np.mean(y).round()), direction=node.get_direction())
             substitute = node.parent.children.index(node)
-            [self._queue.remove(child) for child in node.children if child in self._queue]
             node.parent.children[substitute] = new_node
-            return
+            return 3
+        # Create new node with best feature
         new_node = Tree(parent=node, direction=direction, feature=max_feature, threshold=best_threshold)
-        node.add_child(new_node)
+        if node is not None:
+            node.add_child(new_node)
         self._queue.append(new_node)
-        return
+        return new_node
 
     def __prune(self, X, y):
         return
 
+    def __create_nodes_numerical(self, X, y, feature_vector, node_thresh, node):
+        if np.where(feature_vector <= node_thresh)[0].size > 0 and \
+                np.where(feature_vector > node_thresh)[0].size > 0:
+            dataset_less = X[feature_vector <= node_thresh]
+            dataset_greater = X[feature_vector > node_thresh]
+            label_less = y[feature_vector <= node_thresh]
+            label_greater = y[feature_vector > node_thresh]
+            case = self.__split(dataset_less, label_less, node, 'l')
+            if isinstance(case, DecisionTree):
+                self._queue.append(case)
+            elif case == 3:
+                return
+            case = self.__split(dataset_greater, label_greater, node, 'g')
+            if isinstance(case, DecisionTree):
+                self._queue.append(case)
+            elif case == 3:
+                return
+
+    def __create_nodes_categorical(self, X, y, feature_vector, unique, node):
+        for u in unique:
+            if np.where(feature_vector == u)[0].size > 0:
+                split_dataset = X[feature_vector == u]
+                split_label = y[feature_vector == u]
+                case = self.__split(split_dataset, split_label, node, u)
+                if isinstance(case, DecisionTree):
+                    self._queue.append(case)
+                elif case == 3:
+                    return
+
     def fit(self, X, y):
-        if self.bootstrap:
-            indices = np.random.choice(y.size, int(self.bootstrap*y.size))
-            X = X[indices]
-            y = y[indices]
         if self.max_features is None:
             self.max_features = X.shape[1]
-        self.__split(X, y, self.tree)
+        self.tree = self.__split(X, y, self.tree)
         while len(self._queue) > 0:
             node = self._queue.pop()
             node_feat = node.get_feature()
             node_thresh = node.get_threshold()
+            feature_vector = X[:, node_feat]
+            counts, unique = np.unique(feature_vector, return_counts=True)
+            feature_vector[np.isnan(feature_vector)] = unique[np.argmax(counts)]
+            unique = np.unique(feature_vector)
             if node_thresh is None:
-                unique = np.unique(X[:, node_feat])
-                for u in unique:
-                    if np.where(X[:, node_feat] == u)[0].size > 0:
-                        split_dataset = X[np.where(X[:, node_feat] == u)]
-                        split_label = y[np.where(X[:, node_feat] == u)]
-                        self.__split(split_dataset, split_label, node, u)
+                self.__create_nodes_categorical(X, y, feature_vector, unique, node)
             else:
-                if np.where(X[:, node_feat] <= node_thresh)[0].size > 0 and \
-                        np.where(X[:, node_feat] > node_thresh)[0].size > 0:
-                    dataset_less = X[np.where(X[:, node_feat] <= node_thresh)]
-                    dataset_greater = X[np.where(X[:, node_feat] > node_thresh)]
-                    label_less = y[np.where(X[:, node_feat] <= node_thresh)]
-                    label_greater = y[np.where(X[:, node_feat] > node_thresh)]
-                    self.__split(dataset_less, label_less, node, 'l')
-                    self.__split(dataset_greater, label_greater, node, 'g')
+                self.__create_nodes_numerical(X, y, feature_vector, node_thresh, node)
         return
 
     def predict(self, X):
@@ -258,6 +302,16 @@ class RandomForest(object):
         return np.stack(results).mean(axis=0).round()
 
 
+def get_leaf_decisions(tree, leaf_decisions):
+    if isinstance(tree, Leaf):
+        leaf_decisions.append(tree.decision)
+    elif len(tree.children) == 0:
+        return 0
+    else:
+        for child in tree.children:
+            get_leaf_decisions(child, leaf_decisions)
+
+
 if __name__ == '__main__':
     dataset = pd.read_csv('../dataset32.csv', delimiter=';').drop('vehicle_number', axis=1).values
     X = dataset[:, :-1]
@@ -266,11 +320,22 @@ if __name__ == '__main__':
     X[np.isnan(X)] = 0.
     Y = np.asarray(Y).astype(float)
     Y[Y == 2] = 0.
-    # forest = RandomForest(n_estimators=8)
-    # forest.fit(X, Y)
+    unique, counts = np.unique(Y, return_counts=True)
+    print([count/np.sum(counts) for count in counts])
+    # Y_new = np.copy(Y)
+    # Y_new[Y == 0] = 1
+    # Y_new[Y == 1] = 0
+    # Y = Y_new
+    forest = DecisionTree()
+    forest.fit(X, Y)
+    leaf_decisions = []
+    get_leaf_decisions(forest.tree, leaf_decisions)
+    print(leaf_decisions)
+    unique, counts = np.unique(leaf_decisions, return_counts=True)
+    print([count/np.sum(counts) for count in counts])
     # print(forest.predict(X))
     # print(np.mean(abs(forest.predict(X)-Y)))
-    test = DecisionTreeClassifier(criterion='entropy')
-    test.fit(X, Y)
-    print(test.predict(X))
-    print(np.mean(abs(test.predict(X) - Y)))
+    # sk_tree = DecisionTreeClassifier()
+    # sk_tree.fit(X, Y)
+    # print(np.mean(abs(sk_tree.predict(X)-Y)))
+
