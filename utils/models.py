@@ -12,7 +12,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 
 class Tree(object):
     def __init__(self, parent=None, children=None, feature=None, threshold=None, direction=None, excluded_samples=None,
-                 is_leaf=False, decision=None):
+                 is_leaf=False, decision=None, confidence=None):
         if children is None:
             children = []
         self.parent = parent
@@ -23,6 +23,7 @@ class Tree(object):
         self.excluded_samples = excluded_samples
         self.is_leaf = is_leaf
         self.decision = decision
+        self.confidence = confidence
         self.depth = self.compute_depth()
 
     def set_params(self, **parameters):
@@ -101,7 +102,7 @@ class Tree(object):
         node = self
         samples_list = np.asarray([])
         while node is not None:
-            samples_list = np.concatenate([samples_list, node.get_excluded_samples()])
+            samples_list = np.concatenate([samples_list, node.get_excluded_samples().ravel()])
             node = node.parent
         return np.asarray(samples_list)
 
@@ -118,7 +119,10 @@ class Tree(object):
         self.decision = decision
 
     def get_excluded_samples(self):
-        return self.excluded_samples
+        return np.asarray(self.excluded_samples)
+
+    def get_confidence(self):
+        return self.confidence
 
 
 class DecisionTree(BaseEstimator, ClassifierMixin):
@@ -127,6 +131,7 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
         self.max_features = max_features
         self.tree = None
         self._queue = []
+        self.classes = None
 
     @staticmethod
     def __entropy(labels):
@@ -159,23 +164,34 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
         y_orig = np.copy(y)
         X = X[samples]
         y = y[samples]
-        classes = np.unique(y)
+        classes, counts = np.unique(y, return_counts=True)
+        confidence = np.zeros(2)
         # Base case 1, labels are all the same so create leaf where decision is label
         if classes.size == 1:
-            leaf = Tree(parent=node, decision=classes[0], direction=direction, is_leaf=True)
+            confidence[np.argwhere(self.classes == classes[0])] = 1.
+            leaf = Tree(parent=node, decision=classes[0], direction=direction, is_leaf=True, confidence=confidence)
             node.add_child(leaf)
             return 1
         # Base case 2, no labels associated to this class so create failure decision (should never happen)
         elif classes.size == 0:
+            unique, counts = np.unique(y_orig[samples], return_counts=True)
+            total_labels = np.sum(counts)
+            for u in range(unique.size):
+                confidence[np.argwhere(self.classes == unique[u])] = counts[u]/total_labels
             all_excluded_samples = node.get_all_excluded_samples().astype(dtype=np.int32)
             samples = np.delete(np.arange(dataset_size), all_excluded_samples)
             leaf = Tree(parent=node, decision=int(np.median(y_orig[samples]).round()), direction=direction,
-                        is_leaf=True)
+                        is_leaf=True, confidence=confidence)
             node.add_child(leaf)
             return 2
         # Max depth parameter must be respected
         if self.max_depth is not None and node is not None and node.get_max_depth() == self.max_depth - 1:
-            leaf = Tree(parent=node, decision=int(np.median(y).round()), direction=direction, is_leaf=True)
+            unique, counts = np.unique(y, return_counts=True)
+            total_labels = np.sum(counts)
+            for u in range(unique.size):
+                confidence[np.argwhere(self.classes == unique[u])] = counts[u]/total_labels
+            leaf = Tree(parent=node, decision=int(np.median(y).round()), direction=direction, is_leaf=True,
+                        confidence=confidence)
             node.add_child(leaf)
             return 4
         # Max_features must be respected
@@ -196,14 +212,14 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
                 feature_vector = np.array(feature_vector, dtype=object)
             unique, counts = np.unique(feature_vector, return_counts=True)
             if feature_vector.dtype == 'object':
-                subsets = [np.where(feature_vector == u)[0] for u in unique]
+                subsets = [np.argwhere(feature_vector == u) for u in unique]
                 gain = self.__gain(y, subsets)
                 threshold = None
             elif feature_vector.dtype == 'float64':
                 threshold_gains = []
                 for u in unique:
-                    below = np.where(feature_vector <= u)[0]
-                    above = np.where(feature_vector > u)[0]
+                    below = np.argwhere(feature_vector <= u)
+                    above = np.argwhere(feature_vector > u)
                     threshold_gains.append(self.__gain(y, [below, above]))
                 gain = np.nanmax(threshold_gains)
                 threshold = unique[np.nanargmax(threshold_gains)]
@@ -213,10 +229,14 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
                 best_threshold = threshold
         # Base case 3
         if max_gain == 0.:
+            unique, counts = np.unique(y_orig[samples], return_counts=True)
+            total_labels = np.sum(counts)
+            for u in range(unique.size):
+                confidence[np.argwhere(self.classes == unique[u])] = counts[u] / total_labels
             all_excluded_samples = node.get_all_excluded_samples().astype(dtype=np.int32)
             samples = np.delete(np.arange(dataset_size), all_excluded_samples)
             new_node = Tree(parent=node.parent, decision=int(np.median(y_orig[samples]).round()),
-                            direction=node.get_direction(), is_leaf=True)
+                            direction=node.get_direction(), is_leaf=True, confidence=confidence)
             substitute = node.parent.children.index(node)
             node.parent.children[substitute] = new_node
             return 3
@@ -231,8 +251,8 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
         return
 
     def __create_nodes_numerical(self, X, y, feature_vector, node_thresh, node):
-        less = np.where(feature_vector <= node_thresh)[0]
-        great = np.where(feature_vector > node_thresh)[0]
+        less = np.argwhere(feature_vector <= node_thresh).ravel()
+        great = np.argwhere(feature_vector > node_thresh).ravel()
         case = self.__split(X, y, node, great, 'l')
         if isinstance(case, Tree):
             self._queue.append(case)
@@ -246,7 +266,7 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
 
     def __create_nodes_categorical(self, X, y, feature_vector, unique, node):
         for u in unique:
-            excluded_samples = np.where(feature_vector != u)[0]
+            excluded_samples = np.argwhere(feature_vector != u).ravel()
             case = self.__split(X, y, node, excluded_samples, u)
             if isinstance(case, Tree):
                 self._queue.append(case)
@@ -256,6 +276,7 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
     def fit(self, X, y):
         if self.max_features is None:
             self.max_features = X.shape[1]
+        self.classes = np.unique(y)
         self.tree = self.__split(X, y, self.tree)
         self._queue.append(self.tree)
         while len(self._queue) > 0:
@@ -290,6 +311,27 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
                     node = node.children[direction]
             prediction.append(node.get_decision())
         return np.asarray(prediction)
+
+    def predict_proba(self, X):
+        proba = []
+        for sample in X:
+            node = self.tree
+            while not node.is_leaf:
+                feature = node.get_feature()
+                threshold = node.get_threshold()
+                if threshold is None:
+                    value = sample[feature]
+                    children_direction = [child.direction for child in node.children]
+                    direction = children_direction.index(value)
+                    node = node.children[direction]
+                else:
+                    if sample[feature] - threshold < 0:
+                        direction = 0
+                    else:
+                        direction = 1
+                    node = node.children[direction]
+            proba.append(node.get_confidence())
+        return np.asarray(proba)
 
 
 class RandomForest(BaseEstimator, ClassifierMixin):
@@ -327,6 +369,10 @@ class RandomForest(BaseEstimator, ClassifierMixin):
         results = Parallel(n_jobs=self.n_jobs)(delayed(element.predict)(X) for element in self._estimators)
         return np.median(np.stack(results), axis=0).round()
 
+    def predict_proba(self, X):
+        results = Parallel(n_jobs=self.n_jobs)(delayed(element.predict_proba)(X) for element in self._estimators)
+        return np.mean(np.stack(results, axis=2), axis=2)
+
 
 def get_leaf_decisions(tree, leaf_decisions):
     if tree.is_leaf:
@@ -351,6 +397,7 @@ if __name__ == '__main__':
                                                                             random_state=42)
     forest = RandomForest(n_estimators=8, max_features=5, max_depth=7)
     forest.fit(dataset_train, label_train)
+    forest.predict_proba(dataset_test)
     print(forest.score(dataset_train, label_train))
     print(forest.score(dataset_test, label_test))
     # X = label_to_numerical(X)
