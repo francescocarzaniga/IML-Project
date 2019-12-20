@@ -105,3 +105,11 @@ venv.bak/
 
 # pycharm
 .idea/
+<<<<<<<<< Temporary merge branch 1
+/Class_6___Decision_trees.ipynb
+/dataset32.csv
+=========
+
+# test_Sonia
+/test_Sonia.py
+>>>>>>>>> Temporary merge branch 2
