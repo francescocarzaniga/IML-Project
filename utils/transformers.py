@@ -8,6 +8,13 @@ from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from time import perf_counter
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import cross_validate
+from sklearn.base import clone
+from sklearn.neural_network import MLPClassifier
+from utils.models import RandomForest
+from sklearn.multiclass import OneVsOneClassifier
 
 
 class OneVsOne(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
@@ -18,12 +25,18 @@ class OneVsOne(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         self.classes = None
         self.model_list = None
 
+    def get_params(self):
+        return {**{"model": self.model}, **{"n_jobs": self.n_jobs}, **self.parameters}
+
     def __fit_ovo_estimator(self, X, y, class_one, class_two):
         class_selection = np.logical_or(y == class_one, y == class_two)
         current_model = self.model().set_params(**self.parameters)
         y = y[class_selection]
+        y_binarized = np.zeros_like(y)
+        y_binarized[y == class_one] = 0
+        y_binarized[y == class_two] = 1
         X = X[class_selection]
-        current_model.fit(X, y)
+        current_model.fit(X, y_binarized)
         return current_model, class_one, class_two
 
     def fit(self, X, y):
@@ -41,48 +54,32 @@ class OneVsOne(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     @staticmethod
     def __predict_proba_ovo_estimator(X, model):
         try:
-            confidence = model.predict_proba(X)
+            confidence = np.max(model.predict_proba(X), axis=1)
         except (AttributeError, NotImplementedError):
             confidence = model.decision_function(X)
         return confidence
-
-    def __compute_confidence(self, unique, max_votes, predictions, confidence, i, kind):
-        sample_confidence = np.zeros(self.classes.size)
-        if kind:
-            for k in range(len(self.model_list[0])):
-                sample_confidence[np.argwhere(self.model_list[1][k] == self.classes)] += confidence[i, 0, k]
-                sample_confidence[np.argwhere(self.model_list[2][k] == self.classes)] += confidence[i, 1, k]
-            for c in np.flip(np.sort(sample_confidence)):
-                if self.classes[np.argwhere(sample_confidence == c)] in unique[max_votes]:
-                    return self.classes[np.argwhere(sample_confidence == c)]
-        else:
-            for k in range(len(self.model_list[0])):
-                sample_confidence[np.argwhere(predictions[i, k] == self.classes)] += np.abs(confidence[k, i])
-            for c in np.sort(sample_confidence):
-                if self.classes[np.argwhere(sample_confidence == c)] in unique[max_votes]:
-                    return self.classes[np.argwhere(sample_confidence == c)]
-
-    def __compute_final_prediction(self, predictions, confidence, i, kind):
-        unique, counts = np.unique(predictions[i], return_counts=True)
-        max_votes = np.argwhere(counts == np.max(counts))
-        if max_votes.size > 1:
-            print('Breaking tie...')
-            return self.__compute_confidence(unique, max_votes, predictions, confidence, i, kind=kind)
-        else:
-            return unique[max_votes]
 
     def predict(self, X):
         models = self.model_list[0]
         predictions = np.stack(Parallel(n_jobs=self.n_jobs)(delayed(self.__predict_ovo_estimator)(X, models[i])
                                                             for i in range(len(models)))).astype(dtype=np.int32).T
-        confidence = np.stack(Parallel(n_jobs=self.n_jobs)(delayed(self.__predict_proba_ovo_estimator)(X, models[i])
-                                                           for i in range(len(models))))
-        kind = 0
-        if len(confidence.shape) > 2:
-            kind = 1
-        total_predictions = Parallel(n_jobs=self.n_jobs)(delayed(self.__compute_final_prediction)
-                                                         (predictions, confidence, i, kind) for i in range(X.shape[0]))
-        return np.asarray(total_predictions).ravel()
+        confidences = np.stack(Parallel(n_jobs=self.n_jobs)(delayed(self.__predict_proba_ovo_estimator)(X, models[i])
+                                                            for i in range(len(models)))).T
+        votes = np.zeros((X.shape[0], self.classes.size))
+        total_confidences = np.zeros_like(votes)
+        for model in range(len(models)):
+            class_one_m = self.model_list[1][model]
+            class_two_m = self.model_list[2][model]
+            votes[predictions[:, model] == 0, np.argwhere(self.classes == class_one_m)[0]] += 1
+            votes[predictions[:, model] == 1, np.argwhere(self.classes == class_two_m)[0]] += 1
+            total_confidences[predictions[:, model] == 0, np.argwhere(self.classes == class_one_m)[0]] += \
+                confidences[predictions[:, model] == 0, model]
+            total_confidences[predictions[:, model] == 1, np.argwhere(self.classes == class_two_m)[0]] += \
+                confidences[predictions[:, model] == 1, model]
+        transformed_confidences = (total_confidences /
+                                   (3 * (np.abs(total_confidences) + 1)))
+        winners = self.classes[np.argmax(votes+transformed_confidences, axis=1)]
+        return winners
 
 
 if __name__ == '__main__':
@@ -94,13 +91,27 @@ if __name__ == '__main__':
     X = label_to_numerical(X)
     dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
                                                                             random_state=42)
+    fitter = MLPClassifier
     start = perf_counter()
-    estimator = OneVsOne(KNeighborsClassifier)
+    estimator = OneVsOne(fitter)
     estimator.fit(dataset_train, label_train)
     print(estimator.score(dataset_test, label_test))
     print(perf_counter()-start)
-    start = perf_counter()
-    test = KNeighborsClassifier()
-    test.fit(dataset_train, label_train)
-    print(test.score(dataset_test, label_test))
-    print(perf_counter()-start)
+    # start = perf_counter()
+    # test = SVC(kernel='poly')
+    # test.fit(dataset_train, label_train)
+    # print(test.score(dataset_test, label_test))
+    # print(perf_counter()-start)
+
+    # model_ANN = MLPClassifier
+    # estimator = Pipeline([("imputer", SimpleImputer(missing_values=np.nan, strategy="median")), ("Transform",
+    #                                                                                              OneVsOne(model_ANN,
+    #                                                                                                       hidden_layer_sizes=(
+    #                                                                                                       16,),
+    #                                                                                                       activation='tanh',
+    #                                                                                                       solver='adam',
+    #                                                                                                       learning_rate='adaptive',
+    #                                                                                                       early_stopping=True))])
+    # val_ANN = cross_validate(estimator, X, Y, cv=5)
+    #
+    # print(pd.DataFrame(val_ANN))
