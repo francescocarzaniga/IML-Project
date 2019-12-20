@@ -105,6 +105,3 @@ venv.bak/
 
 # pycharm
 .idea/
-
-# test_Sonia
-/test_Sonia.py
