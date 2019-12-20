@@ -8,6 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.tree import plot_tree
 import matplotlib.pyplot as plt
 from sklearn.base import BaseEstimator, ClassifierMixin
+from time import perf_counter
 
 
 class Tree(object):
@@ -395,16 +396,19 @@ if __name__ == '__main__':
     Y[Y == 2] = 0.
     dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
                                                                             random_state=42)
-    forest = RandomForest(n_estimators=8, max_features=5, max_depth=7)
+    start = perf_counter()
+    forest = RandomForest()
     forest.fit(dataset_train, label_train)
-    forest.predict_proba(dataset_test)
-    print(forest.score(dataset_train, label_train))
+    # forest.predict_proba(dataset_test)
     print(forest.score(dataset_test, label_test))
-    # X = label_to_numerical(X)
-    # dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
-    #                                                                         random_state=42)
-    # sk_tree = RandomForestClassifier(criterion='entropy', n_estimators=100)
-    # sk_tree.fit(dataset_train, label_train)
+    print(perf_counter()-start)
+    X = label_to_numerical(X)
+    dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
+                                                                            random_state=42)
+    start = perf_counter()
+    sk_tree = RandomForestClassifier(criterion='entropy')
+    sk_tree.fit(dataset_train, label_train)
     # print(sk_tree.score(dataset_train, label_train))
-    # print(sk_tree.score(dataset_test, label_test))
+    print(sk_tree.score(dataset_test, label_test))
+    print(perf_counter()-start)
 

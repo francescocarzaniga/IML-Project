@@ -5,7 +5,9 @@ import pandas as pd
 from utils.preprocessing import label_to_numerical, impute_whole
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from time import perf_counter
 
 
 class OneVsOne(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
@@ -64,6 +66,7 @@ class OneVsOne(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         unique, counts = np.unique(predictions[i], return_counts=True)
         max_votes = np.argwhere(counts == np.max(counts))
         if max_votes.size > 1:
+            print('Breaking tie...')
             return self.__compute_confidence(unique, max_votes, predictions, confidence, i, kind=kind)
         else:
             return unique[max_votes]
@@ -91,9 +94,13 @@ if __name__ == '__main__':
     X = label_to_numerical(X)
     dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
                                                                             random_state=42)
-    estimator = OneVsOne(RandomForestClassifier)
+    start = perf_counter()
+    estimator = OneVsOne(KNeighborsClassifier)
     estimator.fit(dataset_train, label_train)
     print(estimator.score(dataset_test, label_test))
-    test = RandomForestClassifier()
+    print(perf_counter()-start)
+    start = perf_counter()
+    test = KNeighborsClassifier()
     test.fit(dataset_train, label_train)
     print(test.score(dataset_test, label_test))
+    print(perf_counter()-start)
