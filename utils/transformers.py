@@ -91,27 +91,9 @@ if __name__ == '__main__':
     X = label_to_numerical(X)
     dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
                                                                             random_state=42)
-    fitter = MLPClassifier
+    fitter = SVC
     start = perf_counter()
-    estimator = OneVsOne(fitter)
+    estimator = OneVsOne(SVC, decision_function_shape='ovr')
     estimator.fit(dataset_train, label_train)
     print(estimator.score(dataset_test, label_test))
     print(perf_counter()-start)
-    # start = perf_counter()
-    # test = SVC(kernel='poly')
-    # test.fit(dataset_train, label_train)
-    # print(test.score(dataset_test, label_test))
-    # print(perf_counter()-start)
-
-    # model_ANN = MLPClassifier
-    # estimator = Pipeline([("imputer", SimpleImputer(missing_values=np.nan, strategy="median")), ("Transform",
-    #                                                                                              OneVsOne(model_ANN,
-    #                                                                                                       hidden_layer_sizes=(
-    #                                                                                                       16,),
-    #                                                                                                       activation='tanh',
-    #                                                                                                       solver='adam',
-    #                                                                                                       learning_rate='adaptive',
-    #                                                                                                       early_stopping=True))])
-    # val_ANN = cross_validate(estimator, X, Y, cv=5)
-    #
-    # print(pd.DataFrame(val_ANN))

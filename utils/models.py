@@ -274,6 +274,24 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
             elif case == 3:
                 return
 
+    def __find_leaf(self, sample):
+        node = self.tree
+        while not node.is_leaf:
+            feature = node.get_feature()
+            threshold = node.get_threshold()
+            if threshold is None:
+                value = sample[feature]
+                children_direction = [child.direction for child in node.children]
+                direction = children_direction.index(value)
+                node = node.children[direction]
+            else:
+                if sample[feature] - threshold < 0:
+                    direction = 0
+                else:
+                    direction = 1
+                node = node.children[direction]
+        return node
+
     def fit(self, X, y):
         if self.max_features is None:
             self.max_features = X.shape[1]
@@ -295,42 +313,14 @@ class DecisionTree(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         prediction = []
         for sample in X:
-            node = self.tree
-            while not node.is_leaf:
-                feature = node.get_feature()
-                threshold = node.get_threshold()
-                if threshold is None:
-                    value = sample[feature]
-                    children_direction = [child.direction for child in node.children]
-                    direction = children_direction.index(value)
-                    node = node.children[direction]
-                else:
-                    if sample[feature] - threshold < 0:
-                        direction = 0
-                    else:
-                        direction = 1
-                    node = node.children[direction]
+            node = self.__find_leaf(sample)
             prediction.append(node.get_decision())
         return np.asarray(prediction)
 
     def predict_proba(self, X):
         proba = []
         for sample in X:
-            node = self.tree
-            while not node.is_leaf:
-                feature = node.get_feature()
-                threshold = node.get_threshold()
-                if threshold is None:
-                    value = sample[feature]
-                    children_direction = [child.direction for child in node.children]
-                    direction = children_direction.index(value)
-                    node = node.children[direction]
-                else:
-                    if sample[feature] - threshold < 0:
-                        direction = 0
-                    else:
-                        direction = 1
-                    node = node.children[direction]
+            node = self.__find_leaf(sample)
             proba.append(node.get_confidence())
         return np.asarray(proba)
 
@@ -397,18 +387,18 @@ if __name__ == '__main__':
     dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
                                                                             random_state=42)
     start = perf_counter()
-    forest = RandomForest()
+    forest = RandomForest(n_estimators=10, max_depth=5)
     forest.fit(dataset_train, label_train)
     # forest.predict_proba(dataset_test)
     print(forest.score(dataset_test, label_test))
     print(perf_counter()-start)
-    X = label_to_numerical(X)
-    dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
-                                                                            random_state=42)
-    start = perf_counter()
-    sk_tree = RandomForestClassifier(criterion='entropy')
-    sk_tree.fit(dataset_train, label_train)
+    # X = label_to_numerical(X)
+    # dataset_train, dataset_test, label_train, label_test = train_test_split(X, Y, test_size=0.2, stratify=Y,
+    #                                                                         random_state=42)
+    # start = perf_counter()
+    # sk_tree = RandomForestClassifier(criterion='entropy')
+    # sk_tree.fit(dataset_train, label_train)
     # print(sk_tree.score(dataset_train, label_train))
-    print(sk_tree.score(dataset_test, label_test))
-    print(perf_counter()-start)
+    # print(sk_tree.score(dataset_test, label_test))
+    # print(perf_counter()-start)
 
